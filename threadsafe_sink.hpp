@@ -5,7 +5,7 @@
 #include <task.h>
 
 namespace freertos {
-enum struct CALLSITE { ISR, NORMAL };
+enum struct CALLSITE { ISR, NON_ISR };
 
 typedef void (*csink_consume_f)(const uint8_t* buf, size_t size);
 
