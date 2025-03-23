@@ -1,9 +1,12 @@
 # freertos-threadsafe-sink
 
-## Summary
+`freertos-threadsafe-sink` is a thread-safe, header-only, multi-producer sink
+based on a circular buffer for FreeRTOS.
 
-`freertos-threadsafe-sink` is a thread-safe header-only multi-producer
-single-consumer sink based on a circular buffer for FreeRTOS.
+## Prerequisites
+
+- C++23 (depends on `constexpr`, `static operator()` for lambdas)
+- FreeRTOS Kernel above V10.2.1 (depends on Task Notification)
 
 ## Usage
 
