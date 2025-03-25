@@ -4,17 +4,20 @@
 #include <semphr.h>
 #include <task.h>
 
+#include <cstring>
+
 namespace freertos {
 enum struct CALLSITE { ISR, NON_ISR };
 
 typedef void (*tsink_consume_f)(const uint8_t* buf, size_t size);
+
+// TODO tsink namespace
 
 namespace detail {
 #ifndef SINK_SIZE
 inline constexpr size_t SINK_SIZE = 2048;
 #endif
 
-inline SemaphoreHandle_t task_semphr;
 inline SemaphoreHandle_t write_mtx;
 inline TaskHandle_t task_hdl;
 
@@ -37,10 +40,11 @@ inline void consume_and_wait(size_t pos, size_t size) {
 inline void task_impl(void*) {
   size_t pos = 0;
   while (true) {
-    xSemaphoreTake(task_semphr, portMAX_DELAY);
-
     auto end = write_idx;
-    if (pos == end && !consumable[pos]) continue;
+    if (pos == end && !consumable[pos]) {
+      vTaskDelay(1);
+      continue;
+    }
 
     auto size = (pos < end ? end : SINK_SIZE) - pos;
     consume_and_wait(pos, size);
@@ -63,13 +67,14 @@ inline void tsink_write(const char* ptr, size_t len) {
     detail::write_idx = (detail::write_idx + 1) % detail::SINK_SIZE;
     taskEXIT_CRITICAL();
   }
-  xSemaphoreGive(detail::task_semphr);
   xSemaphoreGive(detail::write_mtx);
 }
 
+inline void tsink_write_str(const char* s) { tsink_write(s, strlen(s)); }
+
 // callback upon consume completion to signal the sink task
 template <CALLSITE context>
-inline void tsink_consume_complete() {
+void tsink_consume_complete() {
   if constexpr (context == CALLSITE::ISR) {
     static BaseType_t xHigherPriorityTaskWoken;
     vTaskNotifyGiveFromISR(detail::task_hdl, &xHigherPriorityTaskWoken);
@@ -84,11 +89,8 @@ inline void tsink_init(tsink_consume_f f, uint32_t priority) {
   detail::consume = f;
 
   static StaticSemaphore_t write_mtx_buffer;
-  static StaticSemaphore_t task_semphr_buffer;
   configASSERT(
       (detail::write_mtx = xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
-  configASSERT((detail::task_semphr =
-                    xSemaphoreCreateBinaryStatic(&task_semphr_buffer)));
 
   constexpr size_t STACK_SIZE = configMINIMAL_STACK_SIZE * 4;
   static StackType_t task_stack[STACK_SIZE];
