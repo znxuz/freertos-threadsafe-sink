@@ -6,12 +6,12 @@
 
 #include <cstring>
 
-namespace freertos::tsink {
-enum struct CALLSITE { ISR, NON_ISR };
+namespace freertos {
+enum struct TSINK_CALL_FROM { ISR, NON_ISR };
 
-typedef void (*consume_f)(const uint8_t* buf, size_t size);
+using tsink_consume_f = void (*)(const uint8_t* buf, std::size_t size);
 
-namespace detail {
+namespace tsink_detail {
 #ifndef SINK_SIZE
 inline constexpr size_t SINK_SIZE = 2048;
 #endif
@@ -23,7 +23,7 @@ inline uint8_t sink[SINK_SIZE];
 inline bool consumable[SINK_SIZE];
 inline volatile size_t write_idx;
 
-inline consume_f consume;
+inline tsink_consume_f consume;
 
 inline void consume_and_wait(size_t pos, size_t size) {
   auto update_for_writer = [](size_t pos, size_t size) static {
@@ -51,50 +51,51 @@ inline void task_impl(void*) {
     pos = end;
   }
 }
-}  // namespace detail
+}  // namespace tsink_detail
 
 // write `len` from `ptr` buffer into the sink
-inline void write(const char* ptr, size_t len) {
-  xSemaphoreTake(detail::write_mtx, portMAX_DELAY);
+inline void tsink_write(const char* ptr, size_t len) {
+  xSemaphoreTake(tsink_detail::write_mtx, portMAX_DELAY);
   for (size_t i = 0; i < len; ++i) {
-    while (detail::consumable[detail::write_idx]) vTaskDelay(1);
+    while (tsink_detail::consumable[tsink_detail::write_idx]) vTaskDelay(1);
 
-    detail::sink[detail::write_idx] = ptr[i];
+    tsink_detail::sink[tsink_detail::write_idx] = ptr[i];
     taskENTER_CRITICAL();
-    detail::consumable[detail::write_idx] = true;
-    detail::write_idx = (detail::write_idx + 1) % detail::SINK_SIZE;
+    tsink_detail::consumable[tsink_detail::write_idx] = true;
+    tsink_detail::write_idx =
+        (tsink_detail::write_idx + 1) % tsink_detail::SINK_SIZE;
     taskEXIT_CRITICAL();
   }
-  xSemaphoreGive(detail::write_mtx);
+  xSemaphoreGive(tsink_detail::write_mtx);
 }
 
-inline void write_str(const char* s) { write(s, strlen(s)); }
+inline void tsink_write_str(const char* s) { tsink_write(s, strlen(s)); }
 
 // callback upon consume completion to signal the sink task
-template <CALLSITE context>
-void consume_complete() {
-  if constexpr (context == CALLSITE::ISR) {
+template <TSINK_CALL_FROM callsite>
+void tsink_consume_complete() {
+  if constexpr (callsite == TSINK_CALL_FROM::ISR) {
     static BaseType_t xHigherPriorityTaskWoken;
-    vTaskNotifyGiveFromISR(detail::task_hdl, &xHigherPriorityTaskWoken);
+    vTaskNotifyGiveFromISR(tsink_detail::task_hdl, &xHigherPriorityTaskWoken);
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
   } else {
-    xTaskNotifyGive(detail::task_hdl);
+    xTaskNotifyGive(tsink_detail::task_hdl);
   }
 }
 
 // init function taking a function pointer to consume the bytes in the sink
-inline void init(consume_f f, uint32_t priority) {
-  detail::consume = f;
+inline void tsink_init(tsink_consume_f f, uint32_t priority) {
+  tsink_detail::consume = f;
 
   static StaticSemaphore_t write_mtx_buffer;
-  configASSERT(
-      (detail::write_mtx = xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
+  configASSERT((tsink_detail::write_mtx =
+                    xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
 
   constexpr size_t STACK_SIZE = configMINIMAL_STACK_SIZE * 4;
   static StackType_t task_stack[STACK_SIZE];
   static StaticTask_t task_buffer;
-  configASSERT((detail::task_hdl = xTaskCreateStatic(
-                    detail::task_impl, "tsink", STACK_SIZE, NULL, priority,
-                    task_stack, &task_buffer)) != NULL)
+  configASSERT((tsink_detail::task_hdl = xTaskCreateStatic(
+                    tsink_detail::task_impl, "tsink", STACK_SIZE, NULL,
+                    priority, task_stack, &task_buffer)) != NULL)
 }
-}  // namespace freertos::tsink
+}  // namespace freertos
