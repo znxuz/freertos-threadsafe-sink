@@ -6,12 +6,10 @@
 
 #include <cstring>
 
-namespace freertos {
+namespace freertos::tsink {
 enum struct CALLSITE { ISR, NON_ISR };
 
-typedef void (*tsink_consume_f)(const uint8_t* buf, size_t size);
-
-// TODO tsink namespace
+typedef void (*consume_f)(const uint8_t* buf, size_t size);
 
 namespace detail {
 #ifndef SINK_SIZE
@@ -25,7 +23,7 @@ inline uint8_t sink[SINK_SIZE];
 inline bool consumable[SINK_SIZE];
 inline volatile size_t write_idx;
 
-inline tsink_consume_f consume;
+inline consume_f consume;
 
 inline void consume_and_wait(size_t pos, size_t size) {
   auto update_for_writer = [](size_t pos, size_t size) static {
@@ -56,7 +54,7 @@ inline void task_impl(void*) {
 }  // namespace detail
 
 // write `len` from `ptr` buffer into the sink
-inline void tsink_write(const char* ptr, size_t len) {
+inline void write(const char* ptr, size_t len) {
   xSemaphoreTake(detail::write_mtx, portMAX_DELAY);
   for (size_t i = 0; i < len; ++i) {
     while (detail::consumable[detail::write_idx]) vTaskDelay(1);
@@ -70,11 +68,11 @@ inline void tsink_write(const char* ptr, size_t len) {
   xSemaphoreGive(detail::write_mtx);
 }
 
-inline void tsink_write_str(const char* s) { tsink_write(s, strlen(s)); }
+inline void write_str(const char* s) { write(s, strlen(s)); }
 
 // callback upon consume completion to signal the sink task
 template <CALLSITE context>
-void tsink_consume_complete() {
+void consume_complete() {
   if constexpr (context == CALLSITE::ISR) {
     static BaseType_t xHigherPriorityTaskWoken;
     vTaskNotifyGiveFromISR(detail::task_hdl, &xHigherPriorityTaskWoken);
@@ -85,7 +83,7 @@ void tsink_consume_complete() {
 }
 
 // init function taking a function pointer to consume the bytes in the sink
-inline void tsink_init(tsink_consume_f f, uint32_t priority) {
+inline void init(consume_f f, uint32_t priority) {
   detail::consume = f;
 
   static StaticSemaphore_t write_mtx_buffer;
@@ -99,4 +97,4 @@ inline void tsink_init(tsink_consume_f f, uint32_t priority) {
                     detail::task_impl, "tsink", STACK_SIZE, NULL, priority,
                     task_stack, &task_buffer)) != NULL)
 }
-}  // namespace freertos
+}  // namespace freertos::tsink
