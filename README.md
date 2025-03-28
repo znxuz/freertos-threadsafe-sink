@@ -5,36 +5,38 @@ based on a circular buffer for FreeRTOS.
 
 ## Prerequisites
 
-- C++23 (depends on `constexpr`, `static operator()` for lambdas)
+- ARM architecture with atomic byte and word access
 - FreeRTOS Kernel above V10.2.1 (depends on Task Notification)
+- C++23 (depends on `constexpr`, `static operator()` for lambdas)
 
 ## Usage
 
 ### 1. Initialization
 
-Initialize the Sink by calling `csink_init()`.
+Initialize the Sink by calling `tsink_init()`.
 
-Pass a consume function (`csink_consume_f`) and a priority level for the sink
+Pass a consume function (`tsink_consume_f`) and a priority level for the sink
 task to consume the data.
 
 ```cpp
-typedef void (*csink_consume_f)(const uint8_t* buf, size_t size);
+typedef void (*tsink_consume_f)(const uint8_t* buf, size_t size);
 
-inline void csink_init(csink_consume_f f, uint32_t priority);
+inline void tsink_init(tsink_consume_f f, uint32_t priority);
 ```
 
 ### 2. Write Data
 
-Call `csink_write` to write data into the sink. Thread-safely is guaranteed by
+Call `tsink_write` to write data into the sink. Thread-safely is guaranteed by
 synchronizing the calls internally using a mutex.
 
 ```cpp
-inline void csink_write(const char* ptr, size_t len);
+inline void tsink_write(const char* ptr, size_t len);
+inline void tsink_write_str(const char* s);
 ```
 
 ### 3. Signal Consumption Completion
 
-Upon completion of data consumption, call `csink_consume_complete` to signal the
+Upon completion of data consumption, call `tsink_consume_complete` to signal the
 sink task.
 
 This allows the buffer to then overwrite the consumed data if needed. This
@@ -42,8 +44,8 @@ callback can be invoked in an ISR context, for example, when a asynchronous DMA
 operation finishes reading data from the sink and triggers an ISR.
 
 ```cpp
-enum struct CALLSITE { ISR, NON_ISR };
+enum struct TSINK_CALL_FROM { ISR, NON_ISR };
 
-template <CALLSITE context>
-void csink_consume_complete();
+template <TSINK_CALL_FROM callsite>
+void tsink_consume_complete();
 ```
