@@ -9,7 +9,7 @@
 namespace freertos {
 enum struct TSINK_CALL_FROM { ISR, NON_ISR };
 
-using tsink_consume_f = void (*)(const uint8_t* buf, std::size_t size);
+using tsink_consume_f = void (*)(const uint8_t* buf, size_t size);
 
 namespace tsink_detail {
 #ifndef SINK_SIZE
