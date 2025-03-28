@@ -91,7 +91,7 @@ inline void tsink_init(tsink_consume_f f, uint32_t priority) {
   configASSERT((tsink_detail::write_mtx =
                     xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
 
-  constexpr size_t STACK_SIZE = configMINIMAL_STACK_SIZE * 4;
+  constexpr size_t STACK_SIZE = 512;
   static StackType_t task_stack[STACK_SIZE];
   static StaticTask_t task_buffer;
   configASSERT((tsink_detail::task_hdl = xTaskCreateStatic(
