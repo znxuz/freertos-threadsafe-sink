@@ -19,7 +19,7 @@ Pass a consume function (`tsink_consume_f`) and a priority level for the sink
 task to consume the data.
 
 ```cpp
-typedef void (*tsink_consume_f)(const uint8_t* buf, size_t size);
+using tsink_consume_f = void (*)(const uint8_t* buf, size_t size);
 
 inline void tsink_init(tsink_consume_f f, uint32_t priority);
 ```
