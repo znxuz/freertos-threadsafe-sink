@@ -12,24 +12,33 @@ enum struct TSINK_CALL_FROM { ISR, NON_ISR };
 using tsink_consume_f = void (*)(const uint8_t* buf, size_t size);
 
 namespace tsink_detail {
+template <TSINK_CALL_FROM callsite>
 struct mtx_guard {
   mtx_guard(SemaphoreHandle_t mtx) : mtx{mtx} {
-    xSemaphoreTake(mtx, portMAX_DELAY);
+    if constexpr (callsite == TSINK_CALL_FROM::ISR)
+      xSemaphoreTakeFromISR(mtx, &pxHigherPriorityTaskWoken);
+    else
+      xSemaphoreTake(mtx, portMAX_DELAY);
   }
-  ~mtx_guard() { xSemaphoreGive(mtx); }
+  ~mtx_guard() {
+    if constexpr (callsite == TSINK_CALL_FROM::ISR)
+      portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
+    xSemaphoreGive(mtx);
+  }
 
   SemaphoreHandle_t mtx;
+  static BaseType_t pxHigherPriorityTaskWoken;
 };
 
-#ifndef SINK_SIZE
-inline constexpr size_t TSINK_SIZE = 2048;
+#ifndef TSINK_CAPACITY
+inline constexpr size_t TSINK_CAPACITY = 2048;
 #endif
 
 inline SemaphoreHandle_t write_mtx;
 inline TaskHandle_t task_hdl;
 
-inline uint8_t sink[TSINK_SIZE]{};
-inline bool consumable[TSINK_SIZE]{};
+inline uint8_t sink[TSINK_CAPACITY]{};
+inline bool consumable[TSINK_CAPACITY]{};
 inline volatile size_t write_idx = 0;
 inline volatile size_t read_idx = 0;
 
@@ -53,7 +62,7 @@ inline void task_impl(void*) {
       continue;
     }
 
-    auto size = (read_idx < end ? end : TSINK_SIZE) - read_idx;
+    auto size = (read_idx < end ? end : TSINK_CAPACITY) - read_idx;
     consume_and_wait(read_idx, size);
     if (read_idx >= end && end) consume_and_wait(0, end);
 
@@ -63,22 +72,34 @@ inline void task_impl(void*) {
 }  // namespace tsink_detail
 
 // write `len` from `ptr` buffer into the sink
+template <TSINK_CALL_FROM callsite>
 inline void tsink_write_blocking(const char* ptr, size_t len) {
   using namespace tsink_detail;
-
-  volatile auto _ = mtx_guard{write_mtx};
+  volatile auto _ = mtx_guard<callsite>{write_mtx};
   for (size_t i = 0; i < len; ++i) {
     while (consumable[write_idx]) vTaskDelay(1);
     sink[write_idx] = ptr[i];
     taskENTER_CRITICAL();
     consumable[write_idx] = true;
-    write_idx = (write_idx + 1) % TSINK_SIZE;
+    write_idx = (write_idx + 1) % TSINK_CAPACITY;
     taskEXIT_CRITICAL();
   }
 }
 
+template <TSINK_CALL_FROM callsite>
+inline bool tsink_write_or_fail(const char* ptr, size_t len) {
+  using namespace tsink_detail;
+
+  // TODO race condition:
+  // t1 calls first and gets blocked; t2 calls second and passes
+  if (auto space = TSINK_CAPACITY - (write_idx - read_idx); space < len)
+    return false;
+  tsink_write_blocking<callsite>(ptr, len);
+  return true;
+}
+template <TSINK_CALL_FROM callsite>
 inline void tsink_write_str(const char* s) {
-  tsink_write_blocking(s, strlen(s));
+  tsink_write_blocking<callsite>(s, strlen(s));
 }
 
 // callback upon consume completion to signal the sink task
