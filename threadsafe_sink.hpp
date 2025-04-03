@@ -2,7 +2,6 @@
 
 #include <FreeRTOS.h>
 #include <semphr.h>
-#include <task.h>
 
 #include <cstring>
 
@@ -79,13 +78,31 @@ template <TSINK_CALL_FROM callsite>
 inline bool tsink_write_or_fail(const char* ptr, size_t len) {
   using namespace tsink_detail;
 
-  volatile auto _ = mtx_guard<callsite>{write_mtx};
+  volatile auto _ = mtx_guard<callsite>{};
   if (tsink_space() < len) return false;
   for (size_t i = 0; i < len; ++i) {
     sink[write_idx % TSINK_CAPACITY] = ptr[i];
     write_idx += 1;
   }
   return true;
+}
+
+template <TSINK_CALL_FROM callsite>
+inline void tsink_write_ordered(const char* ptr, size_t len, size_t ticket) {
+  using namespace tsink_detail;
+
+  static size_t ticket_matcher;
+  while (true) {
+    if (ticket_matcher == ticket) {
+      while (tsink_space() < len);
+      for (size_t i = 0; i < len; ++i) {
+        sink[write_idx % TSINK_CAPACITY] = ptr[i];
+        write_idx += 1;
+      }
+      ticket_matcher += 1;
+      return;
+    }
+  }
 }
 
 // write `len` from `ptr` buffer into the sink
