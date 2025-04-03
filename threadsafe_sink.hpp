@@ -21,9 +21,12 @@ struct mtx_guard {
       xSemaphoreTake(mtx, portMAX_DELAY);
   }
   ~mtx_guard() {
-    if constexpr (callsite == TSINK_CALL_FROM::ISR)
+    if constexpr (callsite == TSINK_CALL_FROM::ISR) {
+      xSemaphoreGiveFromISR(mtx, NULL);
       portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
-    xSemaphoreGive(mtx);
+    } else {
+      xSemaphoreGive(mtx);
+    }
   }
 
   SemaphoreHandle_t mtx;
