@@ -12,27 +12,6 @@ enum struct TSINK_CALL_FROM { ISR, NON_ISR };
 using tsink_consume_f = void (*)(const uint8_t* buf, size_t size);
 
 namespace tsink_detail {
-template <TSINK_CALL_FROM callsite>
-struct mtx_guard {
-  mtx_guard(SemaphoreHandle_t mtx) : mtx{mtx} {
-    if constexpr (callsite == TSINK_CALL_FROM::ISR)
-      xSemaphoreTakeFromISR(mtx, &pxHigherPriorityTaskWoken);
-    else
-      xSemaphoreTake(mtx, portMAX_DELAY);
-  }
-  ~mtx_guard() {
-    if constexpr (callsite == TSINK_CALL_FROM::ISR) {
-      xSemaphoreGiveFromISR(mtx, NULL);
-      portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
-    } else {
-      xSemaphoreGive(mtx);
-    }
-  }
-
-  SemaphoreHandle_t mtx;
-  static BaseType_t pxHigherPriorityTaskWoken;
-};
-
 #ifndef TSINK_CAPACITY
 inline constexpr size_t TSINK_CAPACITY = 2048;
 #endif
@@ -49,6 +28,28 @@ inline tsink_consume_f consume;
 inline size_t tsink_size() { return write_idx - read_idx; }
 
 inline size_t tsink_space() { return TSINK_CAPACITY - tsink_size(); }
+
+template <TSINK_CALL_FROM callsite>
+struct mtx_guard {
+  mtx_guard() {
+    if constexpr (callsite == TSINK_CALL_FROM::ISR) {
+      configASSERT(
+          xSemaphoreTakeFromISR(write_mtx, &pxHigherPriorityTaskWoken));
+    } else {
+      configASSERT(xSemaphoreTake(write_mtx, portMAX_DELAY));
+    }
+  }
+  ~mtx_guard() {
+    if constexpr (callsite == TSINK_CALL_FROM::ISR) {
+      configASSERT(xSemaphoreGiveFromISR(write_mtx, NULL));
+      portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
+    } else {
+      configASSERT(xSemaphoreGive(write_mtx));
+    }
+  }
+
+  static BaseType_t pxHigherPriorityTaskWoken;
+};
 
 inline void task_impl(void*) {
   auto consume_and_wait = [](size_t pos, size_t size) static {
