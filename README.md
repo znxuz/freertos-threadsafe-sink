@@ -84,15 +84,18 @@ void main() {
   };
 
   tsink_init(tsink_consume_dma, osPriorityAboveNormal);
+}
 ```
 
 Or using blocking-IO:
 
 ```cpp
+void main() {
   auto tsink_consume = [](const uint8_t* buf, size_t size) static {
     HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
     tsink_consume_complete<TSINK_CALL_FROM::NON_ISR>();
   };
 
-  // tsink_init(tsink_consume, osPriorityAboveNormal);
+  tsink_init(tsink_consume, osPriorityAboveNormal);
+}
 ```
