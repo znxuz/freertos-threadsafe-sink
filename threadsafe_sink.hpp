@@ -4,6 +4,7 @@
 #include <semphr.h>
 
 #include <cstring>
+#include <span>
 #include <string_view>
 
 namespace freertos {
@@ -96,6 +97,14 @@ inline void tsink_write_blocking(const char* ptr, size_t len) {
 
 inline void tsink_write_str(std::string_view s) {
   tsink_write_blocking(s.data(), s.size());
+}
+
+template <typename T>
+concept ByteType = std::same_as<T, uint8_t> || std::same_as<T, char>;
+
+template <ByteType T>
+inline void tsink_write_sp(std::span<T> sp) {
+  tsink_write_blocking(sp.data(), sp.size());
 }
 
 // callback upon consume completion to signal the sink task
