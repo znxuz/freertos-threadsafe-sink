@@ -4,6 +4,7 @@
 #include <semphr.h>
 
 #include <cstring>
+#include <string_view>
 
 namespace freertos {
 enum struct TSINK_CALL_FROM { ISR, NON_ISR };
@@ -28,26 +29,9 @@ inline size_t tsink_size() { return write_idx - read_idx; }
 
 inline size_t tsink_space() { return TSINK_CAPACITY - tsink_size(); }
 
-template <TSINK_CALL_FROM callsite>
 struct mtx_guard {
-  mtx_guard() {
-    if constexpr (callsite == TSINK_CALL_FROM::ISR) {
-      configASSERT(
-          xSemaphoreTakeFromISR(write_mtx, &pxHigherPriorityTaskWoken));
-    } else {
-      configASSERT(xSemaphoreTake(write_mtx, portMAX_DELAY));
-    }
-  }
-  ~mtx_guard() {
-    if constexpr (callsite == TSINK_CALL_FROM::ISR) {
-      configASSERT(xSemaphoreGiveFromISR(write_mtx, NULL));
-      portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
-    } else {
-      configASSERT(xSemaphoreGive(write_mtx));
-    }
-  }
-
-  static BaseType_t pxHigherPriorityTaskWoken;
+  mtx_guard() { configASSERT(xSemaphoreTake(write_mtx, portMAX_DELAY)); }
+  ~mtx_guard() { configASSERT(xSemaphoreGive(write_mtx)); }
 };
 
 inline void task_impl(void*) {
@@ -60,7 +44,7 @@ inline void task_impl(void*) {
   size_t size{};
   while (true) {
     if (!(size = tsink_size())) {
-      vTaskDelay(1);
+      vTaskDelay(pdMS_TO_TICKS(1));
       continue;
     }
 
@@ -74,11 +58,28 @@ inline void task_impl(void*) {
 }
 }  // namespace tsink_detail
 
-template <TSINK_CALL_FROM callsite>
+inline void tsink_write_ordered(const char* ptr, size_t len, size_t ticket) {
+  using namespace tsink_detail;
+
+  static size_t ticket_matcher;
+  while (true) {
+    if (ticket == ticket_matcher) {
+      while (tsink_space() < len) vTaskDelay(pdMS_TO_TICKS(1));
+      for (size_t i = 0; i < len; ++i) {
+        sink[write_idx % TSINK_CAPACITY] = ptr[i];
+        write_idx += 1;
+      }
+      ticket_matcher += 1;
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
 inline bool tsink_write_or_fail(const char* ptr, size_t len) {
   using namespace tsink_detail;
 
-  volatile auto _ = mtx_guard<callsite>{};
+  volatile auto _ = mtx_guard{};
   if (tsink_space() < len) return false;
   for (size_t i = 0; i < len; ++i) {
     sink[write_idx % TSINK_CAPACITY] = ptr[i];
@@ -87,34 +88,14 @@ inline bool tsink_write_or_fail(const char* ptr, size_t len) {
   return true;
 }
 
-template <TSINK_CALL_FROM callsite>
-inline void tsink_write_ordered(const char* ptr, size_t len, size_t ticket) {
-  using namespace tsink_detail;
-
-  static size_t ticket_matcher;
-  while (true) {
-    if (ticket_matcher == ticket) {
-      while (tsink_space() < len);
-      for (size_t i = 0; i < len; ++i) {
-        sink[write_idx % TSINK_CAPACITY] = ptr[i];
-        write_idx += 1;
-      }
-      ticket_matcher += 1;
-      return;
-    }
-  }
-}
-
 // write `len` from `ptr` buffer into the sink
-template <TSINK_CALL_FROM callsite>
 inline void tsink_write_blocking(const char* ptr, size_t len) {
   using namespace tsink_detail;
-  while (!tsink_write_or_fail<callsite>(ptr, len)) vTaskDelay(pdMS_TO_TICKS(1));
+  while (!tsink_write_or_fail(ptr, len)) vTaskDelay(pdMS_TO_TICKS(1));
 }
 
-template <TSINK_CALL_FROM callsite>
-inline void tsink_write_str(const char* s) {
-  tsink_write_blocking<callsite>(s, strlen(s));
+inline void tsink_write_str(std::string_view s) {
+  tsink_write_blocking(s.data(), s.size());
 }
 
 // callback upon consume completion to signal the sink task
