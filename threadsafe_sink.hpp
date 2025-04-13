@@ -23,6 +23,7 @@ inline TaskHandle_t task_hdl;
 inline uint8_t sink[TSINK_CAPACITY]{};
 inline volatile size_t write_idx = 0;
 inline volatile size_t read_idx = 0;
+inline volatile size_t ticket_matcher = 0;
 
 inline tsink_consume_f consume;
 
@@ -59,10 +60,14 @@ inline void task_impl(void*) {
 }
 }  // namespace tsink_detail
 
+using tsink_detail::tsink_size;
+using tsink_detail::tsink_space;
+
+inline void tsink_reset_ticket() { tsink_detail::ticket_matcher = 0; }
+
 inline void tsink_write_ordered(const char* ptr, size_t len, size_t ticket) {
   using namespace tsink_detail;
 
-  static size_t ticket_matcher;
   while (true) {
     if (ticket == ticket_matcher) {
       while (tsink_space() < len) vTaskDelay(pdMS_TO_TICKS(1));
