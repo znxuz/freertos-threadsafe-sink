@@ -17,8 +17,8 @@ namespace detail {
 template <typename T>
 concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
 
-template <typename T>
-concept ElemContainer = requires(T t) {
+template <typename C>
+concept ElemContainer = requires(C t) {
   requires Elem<std::decay_t<decltype(t[0])>>;
   t.data();
   t.size();
@@ -91,8 +91,7 @@ inline bool write_or_fail(detail::Elem auto elem) {
 }
 
 // write `len` from `ptr` buffer into the sink
-template <detail::Elem E>
-inline void write_blocking(const E* ptr, size_t len) {
+inline void write_blocking(const detail::Elem auto* ptr, size_t len) {
   using namespace detail;
 
   while (true) {
@@ -109,8 +108,8 @@ inline void write_blocking(const detail::ElemContainer auto& t) {
 }
 
 // performance at the mercy of the scheduler
-template <detail::Elem E>
-inline void write_ordered(const E* ptr, size_t len, size_t ticket) {
+inline void write_ordered(const detail::Elem auto* ptr, size_t len,
+                          size_t ticket) {
   using namespace detail;
 
   while (true) {

@@ -41,21 +41,17 @@ FreeRTOS mutex.
 template <typename T>
 concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
 
-inline bool write_or_fail(Elem auto elem);
-
-template <Elem E>
-inline void write_blocking(const E* ptr, size_t len);
-
-template <typename T>
-concept ElemContainer = requires(T t) {
+template <typename C>
+concept ElemContainer = requires(C t) {
   requires Elem<std::decay_t<decltype(t[0])>>;
   t.data();
   t.size();
 };
-inline void write_blocking(const ElemContainer auto& t);
 
-template <Elem E>
-inline void write_ordered(const E* ptr, size_t len, size_t ticket);
+inline bool write_or_fail(Elem auto elem);
+inline void write_blocking(const Elem auto* ptr, size_t len);
+inline void write_blocking(const ElemContainer auto& t);
+inline void write_ordered(const Elem auto* ptr, size_t len, size_t ticket);
 ```
 
 Strict FIFO can be achieved only with `write_ordered()` by passing a atomically
