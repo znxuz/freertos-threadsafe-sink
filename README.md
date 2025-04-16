@@ -1,6 +1,6 @@
 # freertos-threadsafe-sink
 
-A thread-safe, lock-free with optional strict FIFO guarantee, array-based,
+A thread-safe, lock-free or with optional strict FIFO guarantee, array-based,
 header-only multi-producer byte sink for FreeRTOS.
 
 ## Prerequisites
@@ -11,17 +11,19 @@ header-only multi-producer byte sink for FreeRTOS.
 
 ## Usage
 
+Everything is under the namespace `freertos::tsink`.
+
 ### 1. Initialization
 
-Initialize the Sink by calling `tsink_init()`.
+Initialize by calling `init()`.
 
-Pass a consume function (`tsink_consume_f`) and a priority level for the sink
-task to consume the data.
+Pass a consume function and a priority level for the sink task to consume the
+data.
 
 ```cpp
-using tsink_consume_f = void (*)(const uint8_t* buf, size_t size);
+using consume_fn = void (*)(const uint8_t*, size_t);
 
-inline void tsink_init(tsink_consume_f f, uint32_t priority);
+inline void init(consume_fn f, uint32_t priority);
 ```
 
 Size for the internal circular array is configurable by passing a compile macro
@@ -31,27 +33,18 @@ into a 1-cycle bitwise AND-operation.
 
 ### 2. Write Data
 
-Call `tsink_write_<variant>()` to write data into the sink. Thread-safety for a
-chunk of bytes is guaranteed by synchronizing the calls internally using a
-FreeRTOS-mutex.
-
-Strict FIFO is achieved only with `tsink_write_ordered()` by passing a
-atomically incremented counter starting from 0 as a unique "ticket". Performance
-degrades significantly the more threads there are on calling this function, as
-the non-deterministic task scheduling can't reliably prioritize the correct next
-ticket.
+Call `write_<variant>()` to write data into the sink. Thread-safety for a chunk
+of bytes is guaranteed by synchronizing the calls internally using a
+FreeRTOS mutex.
 
 ```cpp
 template <typename T>
 concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
 
-inline bool tsink_write_or_fail(Elem auto elem);
+inline bool write_or_fail(Elem auto elem);
 
 template <Elem E>
-inline void tsink_write_ordered(const E* ptr, size_t len, size_t ticket);
-
-template <Elem E>
-inline void tsink_write_blocking(const E* ptr, size_t len);
+inline void write_blocking(const E* ptr, size_t len);
 
 template <typename T>
 concept ElemContainer = requires(T t) {
@@ -59,35 +52,46 @@ concept ElemContainer = requires(T t) {
   t.data();
   t.size();
 };
-inline void tsink_write_blocking(const ElemContainer auto& t);
+inline void write_blocking(const ElemContainer auto& t);
+
+template <Elem E>
+inline void write_ordered(const E* ptr, size_t len, size_t ticket);
 ```
+
+Strict FIFO can be achieved only with `write_ordered()` by passing a atomically
+incremented counter starting from 0 as a unique "ticket". Performance degrades
+exponentially with the number of threads there are on calling this function
+concurrently, as the non-deterministic scheduling can't possibly prioritize the
+thread with the next "correct" ticket.
 
 ### 3. Signal Consumption Completion
 
-Upon completion of data transfer, call `tsink_consume_complete()` to signal
+Upon completion of data transfer, call `consume_complete()` to signal
 the sink task.
 
 This allows the buffer to then be able overwrite the consumed data if needed.
 This callback can be invoked in an ISR context.
 
 ```cpp
-enum struct TSINK_CALL_FROM { ISR, NON_ISR };
+enum struct CALL_FROM { ISR, NON_ISR };
 
-template <TSINK_CALL_FROM callsite>
-void tsink_consume_complete();
+template <CALL_FROM callsite>
+void consume_complete();
 ```
 
-For example on a platform configured with STM32-HAL with cache-enabled DMA and
-an ISR triggered upon DMA transfer completion:
+For example on a platform using STM32-HAL with cache-enabled DMA and an ISR
+triggered upon DMA transfer completion:
 
 ```cpp
+using namespace freertos;
+
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart) {
-  if (huart->Instance != huart3.Instance) return;
-  tsink_consume_complete<TSINK_CALL_FROM::ISR>();
+  if (huart->Instance == huart3.Instance) // UART handle for DMA-TX
+    tsink::consume_complete<tsink::CALL_FROM::ISR>();
 }
 
 void main() {
-  auto tsink_consume_dma = [](const uint8_t* buf, size_t size) static {
+  auto consume_dma = [](const uint8_t* buf, size_t size) static {
     auto flush_cache_aligned = [](uintptr_t addr, size_t size) static {
       constexpr auto align_addr = [](uintptr_t addr) { return addr & ~0x1F; };
       constexpr auto align_size = [](uintptr_t addr, size_t size) {
@@ -102,7 +106,7 @@ void main() {
     HAL_UART_Transmit_DMA(&huart3, buf, size);
   };
 
-  tsink_init(tsink_consume_dma, osPriorityAboveNormal);
+  tsink::init(consume_dma, osPriorityAboveNormal);
 }
 ```
 
@@ -110,11 +114,11 @@ Or using blocking-IO:
 
 ```cpp
 void main() {
-  auto tsink_consume = [](const uint8_t* buf, size_t size) static {
+  auto consume = [](const uint8_t* buf, size_t size) static {
     HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
-    tsink_consume_complete<TSINK_CALL_FROM::NON_ISR>();
+    tsink::consume_complete<CALL_FROM::NON_ISR>();
   };
 
-  tsink_init(tsink_consume, osPriorityAboveNormal);
+  tsink::init(consume, osPriorityAboveNormal);
 }
 ```

@@ -7,12 +7,12 @@
 #include <concepts>
 #include <type_traits>
 
-namespace freertos {
-enum struct TSINK_CALL_FROM { ISR, NON_ISR };
+namespace freertos::tsink {
+enum struct CALL_FROM { ISR, NON_ISR };
 
-using tsink_consume_fn = void (*)(const uint8_t*, size_t);
+using consume_fn = void (*)(const uint8_t*, size_t);
 
-namespace tsink_detail {
+namespace detail {
 // TODO: support for half-word & word length
 template <typename T>
 concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
@@ -37,11 +37,11 @@ inline std::atomic<size_t> write_idx = 0;
 
 inline volatile size_t ticket_matcher = 0;
 
-inline tsink_consume_fn consume_fn;
+inline consume_fn consume;
 
-inline size_t tsink_size() { return write_idx - read_idx; }
+inline size_t size() { return write_idx - read_idx; }
 
-inline size_t tsink_space() { return TSINK_CAPACITY - tsink_size(); }
+inline size_t space() { return TSINK_CAPACITY - size(); }
 
 inline size_t normalize(size_t idx) { return idx % TSINK_CAPACITY; }
 
@@ -53,32 +53,32 @@ struct mtx_guard {
 inline void task_impl(void*) {
   auto consume_and_wait = [](size_t pos, size_t size) static {
     if (!size) return;
-    consume_fn(sink + pos, size);
+    consume(sink + pos, size);
     ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
   };
 
   while (true) {
-    if (size_t size = tsink_size(); size) {
-      auto wrap_around = ((normalize(read_idx) + size) / TSINK_CAPACITY) *
-                         normalize(read_idx + size);
-      auto immediate = size - wrap_around;
+    if (size_t sz = size(); sz) {
+      auto wrap_around = ((normalize(read_idx) + sz) / TSINK_CAPACITY) *
+                         normalize(read_idx + sz);
+      auto immediate = sz - wrap_around;
       consume_and_wait(normalize(read_idx), immediate);
       consume_and_wait(0, wrap_around);
-      read_idx += size;
+      read_idx += sz;
     } else {
       vTaskDelay(pdMS_TO_TICKS(1));
     }
   }
 }
-}  // namespace tsink_detail
+}  // namespace detail
 
-using tsink_detail::tsink_size;
-using tsink_detail::tsink_space;
+using detail::size;
+using detail::space;
 
-inline void tsink_reset_ticket() { tsink_detail::ticket_matcher = 0; }
+inline void reset_ticket() { detail::ticket_matcher = 0; }
 
-inline bool tsink_write_or_fail(tsink_detail::Elem auto elem) {
-  using namespace tsink_detail;
+inline bool write_or_fail(detail::Elem auto elem) {
+  using namespace detail;
 
   // TODO: does the load and CAS need to be paired in certain memory order?
   auto expected = write_idx.load();
@@ -90,46 +90,44 @@ inline bool tsink_write_or_fail(tsink_detail::Elem auto elem) {
   return false;
 }
 
-// performance at the mercy of the scheduler
-template <tsink_detail::Elem E>
-inline void tsink_write_ordered(const E* ptr, size_t len, size_t ticket) {
-  using namespace tsink_detail;
-
-  while (true) {
-    if (ticket == ticket_matcher) {
-      while (tsink_space() < len) vTaskDelay(pdMS_TO_TICKS(1));
-      for (size_t i = 0; i < len; ++i)
-        configASSERT(tsink_write_or_fail(ptr[i]));
-      ticket_matcher += 1;
-      return;
-    }
-  }
-}
-
 // write `len` from `ptr` buffer into the sink
-template <tsink_detail::Elem E>
-inline void tsink_write_blocking(const E* ptr, size_t len) {
-  using namespace tsink_detail;
+template <detail::Elem E>
+inline void write_blocking(const E* ptr, size_t len) {
+  using namespace detail;
 
   while (true) {
-    if (volatile auto _ = mtx_guard{}; tsink_space() >= len) {
-      for (size_t i = 0; i < len; ++i)
-        configASSERT(tsink_write_or_fail(ptr[i]));
+    if (volatile auto _ = mtx_guard{}; space() >= len) {
+      for (size_t i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
       return;
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
-inline void tsink_write_blocking(const tsink_detail::ElemContainer auto& t) {
-  tsink_write_blocking(t.data(), t.size());
+inline void write_blocking(const detail::ElemContainer auto& t) {
+  write_blocking(t.data(), t.size());
+}
+
+// performance at the mercy of the scheduler
+template <detail::Elem E>
+inline void write_ordered(const E* ptr, size_t len, size_t ticket) {
+  using namespace detail;
+
+  while (true) {
+    if (ticket == ticket_matcher) {
+      while (space() < len) vTaskDelay(pdMS_TO_TICKS(1));
+      for (size_t i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
+      ticket_matcher += 1;
+      return;
+    }
+  }
 }
 
 // callback upon consume completion to signal the sink task
-template <TSINK_CALL_FROM callsite>
-void tsink_consume_complete() {
-  using namespace tsink_detail;
-  if constexpr (callsite == TSINK_CALL_FROM::ISR) {
+template <CALL_FROM callsite>
+void consume_complete() {
+  using namespace detail;
+  if constexpr (callsite == CALL_FROM::ISR) {
     static BaseType_t xHigherPriorityTaskWoken;
     vTaskNotifyGiveFromISR(task_hdl, &xHigherPriorityTaskWoken);
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -139,9 +137,9 @@ void tsink_consume_complete() {
 }
 
 // init function taking a function pointer to consume the bytes in the sink
-inline void tsink_init(tsink_consume_fn f, uint32_t priority) {
-  using namespace tsink_detail;
-  consume_fn = f;
+inline void init(consume_fn f, uint32_t priority) {
+  using namespace detail;
+  consume = f;
 
   static StaticSemaphore_t write_mtx_buffer;
   configASSERT((write_mtx = xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
@@ -153,4 +151,4 @@ inline void tsink_init(tsink_consume_fn f, uint32_t priority) {
                                              NULL, priority, task_stack,
                                              &task_buffer)) != NULL)
 }
-}  // namespace freertos
+}  // namespace freertos::tsink
