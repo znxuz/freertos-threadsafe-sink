@@ -63,10 +63,10 @@ thread with the next "correct" ticket.
 ### 3. Signal Consumption Completion
 
 Upon completion of data transfer, call `consume_complete()` to signal
-the sink task.
+the sink task. This callback can be invoked in an ISR context.
 
-This allows the buffer to then be able overwrite the consumed data if needed.
-This callback can be invoked in an ISR context.
+It allows the circular array buffer to then be able to overwrite the consumed
+data if necessary.
 
 ```cpp
 enum struct CALL_FROM { ISR, NON_ISR };
