@@ -1,7 +1,7 @@
 # freertos-threadsafe-sink
 
-A thread-safe with optionally strict FIFO guarantee, array-based, header-only
-multi-producer byte sink for FreeRTOS.
+A thread-safe, lock-free with optional strict FIFO guarantee, array-based,
+header-only multi-producer byte sink for FreeRTOS.
 
 ## Prerequisites
 
@@ -26,22 +26,40 @@ inline void tsink_init(tsink_consume_f f, uint32_t priority);
 
 Size for the internal circular array is configurable by passing a compile macro
 `-DTSINK_CAPACITY`. By default its 2k in size. A size of a power of two is
-**strongly** recommended for turning modulo operations into a 1-cycle bitwise
-AND-operation, which is done on upon every access to the read/write buffer
-pointers.
+**strongly** recommended for turning modulo operations (normalizing the indices)
+into a 1-cycle bitwise AND-operation.
 
 ### 2. Write Data
 
-Call `tsink_write_<variant>()` to write data into the sink. Thread-safety is
-guaranteed by synchronizing the calls internally using a FreeRTOS-mutex. Strict
-FIFO is achieved only with `tsink_write_ordered()` by passing a atomically
-incremented counter starting from 0 as a unique "ticket".
+Call `tsink_write_<variant>()` to write data into the sink. Thread-safety for a
+chunk of bytes is guaranteed by synchronizing the calls internally using a
+FreeRTOS-mutex.
+
+Strict FIFO is achieved only with `tsink_write_ordered()` by passing a
+atomically incremented counter starting from 0 as a unique "ticket". Performance
+degrades significantly the more threads there are on calling this function, as
+the non-deterministic task scheduling can't reliably prioritize the correct next
+ticket.
 
 ```cpp
-inline void tsink_write_ordered(const char* ptr, size_t len, size_t ticket);
-inline void tsink_write_blocking(const char* ptr, size_t len);
-inline void tsink_write_or_fail(const char* ptr, size_t len);
-inline void tsink_write_str(std::string_view s);
+template <typename T>
+concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
+
+inline bool tsink_write_or_fail(Elem auto elem);
+
+template <Elem E>
+inline void tsink_write_ordered(const E* ptr, size_t len, size_t ticket);
+
+template <Elem E>
+inline void tsink_write_blocking(const E* ptr, size_t len);
+
+template <typename T>
+concept ElemContainer = requires(T t) {
+  requires Elem<std::decay_t<decltype(t[0])>>;
+  t.data();
+  t.size();
+};
+inline void tsink_write_blocking(const ElemContainer auto& t);
 ```
 
 ### 3. Signal Consumption Completion
