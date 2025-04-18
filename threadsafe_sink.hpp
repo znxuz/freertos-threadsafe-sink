@@ -80,7 +80,6 @@ inline void reset_ticket() { detail::ticket_matcher = 0; }
 inline bool write_or_fail(detail::Elem auto elem) {
   using namespace detail;
 
-  // TODO: does the load and CAS need to be paired in certain memory order?
   auto expected = write_idx.load();
   if (expected - read_idx == TSINK_CAPACITY) return false;
   if (write_idx.compare_exchange_strong(expected, expected + 1)) {
