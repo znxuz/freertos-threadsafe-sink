@@ -55,10 +55,25 @@ inline void write_ordered(const Elem auto* ptr, size_t len, size_t ticket);
 ```
 
 Strict FIFO can be achieved only with `write_ordered()` by passing a atomically
-incremented counter starting from 0 as a unique "ticket". Performance degrades
+incremented counter starting from 0 as a unique *ticket*. Performance degrades
 exponentially with the number of threads there are on calling this function
 concurrently, as the non-deterministic scheduling can't possibly prioritize the
-thread with the next "correct" ticket.
+thread with the next "correct" ticket. Also call `reset_ticket()` when the
+atomic ticket starts from 0 again.
+
+#### examples
+
+```cpp
+uint8_t buf[100];
+char buf[100]; // alternative
+
+auto success = write_or_fail('c');
+write_blocking("hello world"sv);
+write_blocking(buf, std::strlen(buf));
+
+auto ticket_machine = std::atomic<size_t>{};
+write_ordered(buf, std::strlen(buf), ticket_machine.fetch_add(1));
+```
 
 ### 3. Signal Consumption Completion
 
@@ -112,7 +127,7 @@ Or using blocking-IO:
 void main() {
   auto consume = [](const uint8_t* buf, size_t size) static {
     HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
-    tsink::consume_complete<CALL_FROM::NON_ISR>();
+    tsink::consume_complete<tsink::CALL_FROM::NON_ISR>();
   };
 
   tsink::init(consume, osPriorityAboveNormal);
