@@ -33,9 +33,7 @@ into a 1-cycle bitwise AND-operation.
 
 ### 2. Write Data
 
-Call `write_<variant>()` to write data into the sink. Thread-safety for a chunk
-of bytes is guaranteed by synchronizing the calls internally using a
-FreeRTOS mutex.
+Call `write_<variant>()` to write data into the sink.
 
 ```cpp
 template <typename T>
@@ -54,12 +52,16 @@ inline void write_blocking(const ElemContainer auto& t);
 inline void write_ordered(const Elem auto* ptr, size_t len, size_t ticket);
 ```
 
-Strict FIFO can be achieved only with `write_ordered()` by passing a atomically
-incremented counter starting from 0 as a unique *ticket*. Performance degrades
-exponentially with the number of threads there are on calling this function
-concurrently, as the non-deterministic scheduling can't possibly prioritize the
-thread with the next "correct" ticket. Also call `reset_ticket()` when the
-atomic ticket starts from 0 again.
+Thread-safe, lock-free byte writes are done via atomic CAS. And for a chunk of
+bytes, thread-safety is guaranteed by synchronizing the calls internally using a
+FreeRTOS mutex.
+
+Strict FIFO order can be achieved only with `write_ordered()` by passing a
+atomically incremented counter starting from 0 as a unique *ticket*. Performance
+degrades exponentially with the number of threads there are on calling this
+function concurrently, as the non-deterministic scheduling can't possibly
+prioritize the thread with the next "correct" ticket. Also call `reset_ticket()`
+when the atomic ticket starts from 0 again.
 
 #### examples
 
@@ -80,8 +82,9 @@ write_ordered(buf, std::strlen(buf), ticket_machine.fetch_add(1));
 Upon completion of data transfer, call `consume_complete()` to signal
 the sink task. This callback can be invoked in an ISR context.
 
-It allows the circular array buffer to then be able to overwrite the consumed
-data if necessary.
+This mechanism enables the sink to synchronize with external IO hardware (e.g.,
+a DMA controller), allowing it to initiate subsequent writes only after previous
+transfers have completed.
 
 ```cpp
 enum struct CALL_FROM { ISR, NON_ISR };
