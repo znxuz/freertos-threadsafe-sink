@@ -59,10 +59,11 @@ inline void task_impl(void*) {
 
   while (true) {
     if (size_t sz = size(); sz) {
-      auto wrap_around = ((normalize(read_idx) + sz) / TSINK_CAPACITY) *
-                         normalize(read_idx + sz);
+      auto idx = normalize(read_idx);
+      auto wrap_around = ((idx + sz) / TSINK_CAPACITY) *  // either 1 or 0
+                         ((idx + sz) % TSINK_CAPACITY);   // actual amount
       auto immediate = sz - wrap_around;
-      consume_and_wait(normalize(read_idx), immediate);
+      consume_and_wait(idx, immediate);
       consume_and_wait(0, wrap_around);
       read_idx += sz;
     } else {
