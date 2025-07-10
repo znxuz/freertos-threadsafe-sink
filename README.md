@@ -1,39 +1,37 @@
-# freertos-threadsafe-sink
+# `freertos-threadsafe-sink`
 
 A thread-safe, lock-free or with optional strict FIFO guarantee, array-based,
-header-only multi-producer byte sink for FreeRTOS.
+header-only multi-producer byte sink for FreeRTOS. The written data is then read
+automatically via a internally & statically created FreeRTOS task.
 
 ## Prerequisites
 
 - Architecture with default atomic byte and word access, i.e. ARM
 - FreeRTOS Kernel above `V10.2.1` (depends on Task Notification)
-- C++23 (depends on `constexpr if`, `static operator()` for lambdas)
+- C++23 (depends on `constexpr if`)
 
 ## Usage
 
-Everything is under the namespace `freertos::tsink`.
+Everything is under the namespace `freertos`.
 
 ### 1. Initialization
 
-Initialize by calling `init()`.
+Create a `tsink<N>`.
 
-Pass a consume function and a priority level for the sink task to consume the
-data.
+A size of a power of two is **strongly** recommended to get better performance
+by turning division & modulo operations (used in a hot loop by the reader for
+normalizing the indices) into 1-cycle instructions.
+
+Pass a consume function and a priority level for the reader task to
+automatically consume the data.
 
 ```cpp
-using consume_fn = void (*)(const uint8_t*, size_t);
-
-inline void init(consume_fn f, uint32_t priority);
+using consume_fn_ptr = void (*)(const uint8_t*, size_t);
 ```
-
-Size for the internal circular array is configurable by passing a compile macro
-`-DTSINK_CAPACITY`. By default its 2k in size. A size of a power of two is
-**strongly** recommended for turning modulo operations (normalizing the indices)
-into a 1-cycle bitwise AND-operation.
 
 ### 2. Write Data
 
-Call `write_<variant>()` to write data into the sink.
+Call `write_<variant>()` member functions to write data into the sink.
 
 ```cpp
 template <typename T>
@@ -46,15 +44,17 @@ concept ElemContainer = requires(C t) {
   t.size();
 };
 
-inline bool write_or_fail(Elem auto elem);
-inline void write_blocking(const Elem auto* ptr, size_t len);
-inline void write_blocking(const ElemContainer auto& t);
-inline void write_ordered(const Elem auto* ptr, size_t len, size_t ticket);
+bool write_or_fail(Elem auto elem);
+void write_blocking(const Elem auto* ptr, size_t len);
+void write_blocking(const ElemContainer auto& t);
+void write_ordered(const Elem auto* ptr, size_t len, size_t ticket);
 ```
 
-Thread-safe, lock-free byte writes are done via atomic CAS. And for a chunk of
-bytes, thread-safety is guaranteed by synchronizing the calls internally using a
-FreeRTOS mutex.
+Thread-safe, lock-free byte writes are done via atomic CAS(Compare and Swap)
+while leveraging the default read/write atomicity for aligned byte on ARM.
+
+For a chunk of bytes, thread-safety is guaranteed by synchronizing the calls
+internally using a statically initialized FreeRTOS mutex.
 
 Strict FIFO order can be achieved only with `write_ordered()` by passing a
 atomically incremented counter starting from 0 as a unique *ticket*. Performance
@@ -62,20 +62,6 @@ degrades exponentially with the number of threads there are on calling this
 function concurrently, as the non-deterministic scheduling can't possibly
 prioritize the thread with the next "correct" ticket. Also call `reset_ticket()`
 when the atomic ticket starts from 0 again.
-
-#### examples
-
-```cpp
-uint8_t buf[100];
-char buf[100]; // alternative
-
-auto success = write_or_fail('c');
-write_blocking("hello world"sv);
-write_blocking(buf, std::strlen(buf));
-
-auto ticket_machine = std::atomic<size_t>{};
-write_ordered(buf, std::strlen(buf), ticket_machine.fetch_add(1));
-```
 
 ### 3. Signal Consumption Completion
 
@@ -93,15 +79,37 @@ template <CALL_FROM callsite>
 void consume_complete();
 ```
 
-For example on a platform using STM32-HAL with cache-enabled DMA and an ISR
-triggered upon DMA transfer completion:
+#### examples
+
+```cpp
+auto tsink_consume = [](const uint8_t* buf, size_t size) static {
+  HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
+  sink->consume_complete<CALL_FROM::NON_ISR>();
+};
+auto sink = tsink<2048>(tsink_consume, osPriorityAboveNormal);;
+
+uint8_t buf[100];
+char buf[100]; // alternative
+
+auto success = sink.write_or_fail('c');
+sink.write_blocking("hello world"sv);
+sink.write_blocking(buf, std::strlen(buf));
+
+auto ticket_machine = std::atomic<size_t>{};
+sink.write_ordered(buf, std::strlen(buf), ticket_machine.fetch_add(1));
+```
+
+For a platform using STM32-HAL with cache-enabled DMA and an ISR triggered upon
+DMA transfer completion:
 
 ```cpp
 using namespace freertos;
 
+std::shared_ptr<tsink<2048>> sink;
+
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart) {
   if (huart->Instance == huart3.Instance) // UART handle for DMA-TX
-    tsink::consume_complete<tsink::CALL_FROM::ISR>();
+  sink->consume_complete<CALL_FROM::ISR>();
 }
 
 void main() {
@@ -120,19 +128,12 @@ void main() {
     HAL_UART_Transmit_DMA(&huart3, buf, size);
   };
 
-  tsink::init(consume_dma, osPriorityAboveNormal);
+  sink = std::make_shared<tsink<2048>>(consume_dma, osPriorityAboveNormal);
+  sink->write_blocking("sink initialized\n"sv);
 }
 ```
 
-Or using blocking-IO:
+# TODO
 
-```cpp
-void main() {
-  auto consume = [](const uint8_t* buf, size_t size) static {
-    HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
-    tsink::consume_complete<tsink::CALL_FROM::NON_ISR>();
-  };
-
-  tsink::init(consume, osPriorityAboveNormal);
-}
-```
+- write with variable atomic length data
+- API to manually consume the data instead using a task to do so automatically
