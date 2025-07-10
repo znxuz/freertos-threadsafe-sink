@@ -1,8 +1,6 @@
 # `freertos-threadsafe-sink`
 
-A thread-safe, lock-free or with optional strict FIFO guarantee, array-based,
-header-only multi-producer byte sink for FreeRTOS. The written data is then read
-automatically via a internally & statically created FreeRTOS task.
+A lock-free, array-based, header-only multi-producer byte sink for FreeRTOS.
 
 ## Prerequisites
 
@@ -16,7 +14,7 @@ Everything is under the namespace `freertos`.
 
 ### 1. Initialization
 
-Create a `tsink<N>`.
+Construct a `tsink<N>`.
 
 A size of a power of two is **strongly** recommended to get better performance
 by turning division & modulo operations (used in a hot loop by the reader for
@@ -66,11 +64,11 @@ when the atomic ticket starts from 0 again.
 ### 3. Signal Consumption Completion
 
 Upon completion of data transfer, call `consume_complete()` to signal
-the sink task. This callback can be invoked in an ISR context.
+the reader task. This callback can be invoked in an ISR context.
 
-This mechanism enables the sink to synchronize with external IO hardware (e.g.,
-a DMA controller), allowing it to initiate subsequent writes only after previous
-transfers have completed.
+This mechanism is needed to allow the reader task to synchronize with external
+IO hardware (e.g., a DMA controller) to initiate subsequent writes only after
+the previous transfer has been completed.
 
 ```cpp
 enum struct CALL_FROM { ISR, NON_ISR };
@@ -135,5 +133,5 @@ void main() {
 
 # TODO
 
-- write with variable atomic length data
-- API to manually consume the data instead using a task to do so automatically
+- atomic write also for word length data
+- API to manually get & consume the data instead automatically via task
