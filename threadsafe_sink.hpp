@@ -31,7 +31,7 @@ struct tsink {
     }
     ~mtx_guard() { configASSERT(xSemaphoreGive(mtx)); }
 
-    SemaphoreHandle_t mtx = nullptr;
+    SemaphoreHandle_t mtx;
   };
 
   using consume_fn_ptr = void (*)(const uint8_t*, size_t);
@@ -48,7 +48,6 @@ struct tsink {
       };
 
       auto* sink = reinterpret_cast<tsink<N>*>(arg);
-
       while (true) {
         if (size_t sz = sink->size(); sz) {
           auto idx = sink->normalize(sink->read_idx);
@@ -68,17 +67,32 @@ struct tsink {
     static StaticSemaphore_t write_mtx_buffer;
     configASSERT((write_mtx = xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
 
-    constexpr size_t STACK_SIZE = 512;
+    constexpr size_t STACK_SIZE = 512;  // TODO: reduce the size amap
     static StackType_t task_stack[STACK_SIZE];
     static StaticTask_t task_buffer;
-    configASSERT((consum_task_hdl = xTaskCreateStatic(
-                      task_impl, "tsink", STACK_SIZE, this, priority,
-                      task_stack, &task_buffer)) != NULL)
+    configASSERT((task_hdl = xTaskCreateStatic(task_impl, "tsink", STACK_SIZE,
+                                               this, priority, task_stack,
+                                               &task_buffer)) != NULL)
   }
 
-  constexpr size_type size() { return write_idx - read_idx; }
-  constexpr size_type space() { return ringbuf.size() - size(); }
-  constexpr size_type normalize(size_type idx) { return idx % ringbuf.size(); }
+  ~tsink() {
+    vTaskDelete(task_hdl);
+    vSemaphoreDelete(write_mtx);
+  }
+
+  tsink(tsink&& rhs) {
+    using std::swap;
+    swap(ringbuf, rhs.ringbuf);
+    swap(read_idx, rhs.read_idx);
+    swap(write_idx, rhs.write_idx);
+    swap(ticket_matcher, rhs.ticket_matcher);
+    swap(task_hdl, rhs.task_hdl);
+    swap(write_mtx, rhs.write_mtx);
+    swap(consume_fn, rhs.consume_fn);
+  }
+
+  constexpr size_type size() const { return write_idx - read_idx; }
+  constexpr size_type space() const { return ringbuf.size() - size(); }
   void reset_ticket() { ticket_matcher = 0; }
 
   bool write_or_fail(Elem auto elem) {
@@ -123,10 +137,10 @@ struct tsink {
   void consume_complete() {
     if constexpr (callsite == CALL_FROM::ISR) {
       static BaseType_t xHigherPriorityTaskWoken;
-      vTaskNotifyGiveFromISR(consum_task_hdl, &xHigherPriorityTaskWoken);
+      vTaskNotifyGiveFromISR(task_hdl, &xHigherPriorityTaskWoken);
       portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     } else {
-      xTaskNotifyGive(consum_task_hdl);
+      xTaskNotifyGive(task_hdl);
     }
   }
 
@@ -135,9 +149,13 @@ struct tsink {
   volatile size_type read_idx = 0;
   std::atomic<size_type> write_idx = 0;
   size_type ticket_matcher = 0;
-  TaskHandle_t consum_task_hdl = nullptr;
+  TaskHandle_t task_hdl = nullptr;
   SemaphoreHandle_t write_mtx = nullptr;
   consume_fn_ptr consume_fn = nullptr;
+
+  constexpr size_type normalize(size_type idx) const {
+    return idx % ringbuf.size();
+  }
 };
 
 }  // namespace freertos
