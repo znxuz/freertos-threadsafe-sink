@@ -79,7 +79,7 @@ template <CALL_FROM callsite>
 void consume_complete();
 ```
 
-#### examples
+## examples
 
 ```cpp
 auto tsink_consume = [](const uint8_t* buf, size_t size) static {
