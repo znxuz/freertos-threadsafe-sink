@@ -10,8 +10,7 @@
 #include <type_traits>
 
 namespace freertos {
-enum struct CALL_FROM { ISR, NON_ISR };
-
+namespace detail {
 // TODO: variable atomic length support
 template <typename T>
 concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
@@ -22,26 +21,21 @@ concept ElemContainer = requires(C t) {
   t.data();
   t.size();
 };
+}  // namespace detail
 
-template <size_t N>
+enum struct CALL_FROM : uint8_t { ISR, NON_ISR };
+
+using size_type = size_t;
+
+template <size_type N>
 struct tsink {
-  struct mtx_guard {
-    explicit mtx_guard(SemaphoreHandle_t write_itx) : mtx{write_itx} {
-      configASSERT(xSemaphoreTake(mtx, portMAX_DELAY));
-    }
-    ~mtx_guard() { configASSERT(xSemaphoreGive(mtx)); }
-
-    SemaphoreHandle_t mtx;
-  };
-
-  using consume_fn_ptr = void (*)(const uint8_t*, size_t);
-
-  using size_type = size_t;
+  using consume_fn_ptr = void (*)(const uint8_t*, size_type);
 
   tsink(consume_fn_ptr f, uint32_t priority) : consume_fn{f} {
     auto task_impl = [](void* arg) {
-      auto consume_and_wait = [](std::span<const uint8_t> ringbuf, size_t pos,
-                                 size_t size, consume_fn_ptr consume_fn) {
+      auto consume_and_wait = [](std::span<const uint8_t> ringbuf,
+                                 size_type pos, size_type size,
+                                 consume_fn_ptr consume_fn) {
         if (!size) return;
         consume_fn(ringbuf.data() + pos, size);
         ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
@@ -49,7 +43,7 @@ struct tsink {
 
       auto* sink = reinterpret_cast<tsink<N>*>(arg);
       while (true) {
-        if (size_t sz = sink->size(); sz) {
+        if (size_type sz = sink->size(); sz) {
           auto idx = sink->normalize(sink->read_idx);
           auto wrap_around =
               ((idx + sz) / sink->ringbuf.size()) *  // either 1 or 0
@@ -67,7 +61,7 @@ struct tsink {
     static StaticSemaphore_t write_mtx_buffer;
     configASSERT((write_mtx = xSemaphoreCreateMutexStatic(&write_mtx_buffer)));
 
-    constexpr size_t STACK_SIZE = 512;  // TODO: reduce the size amap
+    constexpr size_type STACK_SIZE = 256;
     static StackType_t task_stack[STACK_SIZE];
     static StaticTask_t task_buffer;
     configASSERT((task_hdl = xTaskCreateStatic(task_impl, "tsink", STACK_SIZE,
@@ -82,9 +76,10 @@ struct tsink {
 
   tsink(tsink&& rhs) {
     using std::swap;
+
     swap(ringbuf, rhs.ringbuf);
     swap(read_idx, rhs.read_idx);
-    swap(write_idx, rhs.write_idx);
+    write_idx.store(rhs.write_idx.exchange(write_idx.load()));
     swap(ticket_matcher, rhs.ticket_matcher);
     swap(task_hdl, rhs.task_hdl);
     swap(write_mtx, rhs.write_mtx);
@@ -95,7 +90,7 @@ struct tsink {
   constexpr size_type space() const { return ringbuf.size() - size(); }
   void reset_ticket() { ticket_matcher = 0; }
 
-  bool write_or_fail(Elem auto elem) {
+  bool write_or_fail(detail::Elem auto elem) {
     auto expected = write_idx.load();
     if (expected - read_idx == ringbuf.size()) return false;
     if (write_idx.compare_exchange_strong(expected, expected + 1)) {
@@ -106,26 +101,27 @@ struct tsink {
   }
 
   // write `len` from `ptr` buffer into the sink
-  void write_blocking(const Elem auto* ptr, size_t len) {
+  void write_blocking(const detail::Elem auto* ptr, size_type len) {
     while (true) {
       if (volatile auto _ = mtx_guard{write_mtx}; space() >= len) {
-        for (size_t i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
+        for (size_type i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
         return;
       }
       vTaskDelay(pdMS_TO_TICKS(1));
     }
   }
 
-  void write_blocking(const ElemContainer auto& t) {
+  void write_blocking(const detail::ElemContainer auto& t) {
     write_blocking(t.data(), t.size());
   }
 
   // performance at the mercy of the scheduler
-  inline void write_ordered(const Elem auto* ptr, size_t len, size_t ticket) {
+  inline void write_ordered(const detail::Elem auto* ptr, size_type len,
+                            size_type ticket) {
     while (true) {
       if (ticket == ticket_matcher) {
         while (space() < len) vTaskDelay(pdMS_TO_TICKS(1));
-        for (size_t i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
+        for (size_type i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
         ticket_matcher += 1;
         return;
       }
@@ -152,6 +148,15 @@ struct tsink {
   TaskHandle_t task_hdl = nullptr;
   SemaphoreHandle_t write_mtx = nullptr;
   consume_fn_ptr consume_fn = nullptr;
+
+  struct mtx_guard {
+    explicit mtx_guard(SemaphoreHandle_t write_itx) : mtx{write_itx} {
+      configASSERT(xSemaphoreTake(mtx, portMAX_DELAY));
+    }
+    ~mtx_guard() { configASSERT(xSemaphoreGive(mtx)); }
+
+    SemaphoreHandle_t mtx;
+  };
 
   constexpr size_type normalize(size_type idx) const {
     return idx % ringbuf.size();
