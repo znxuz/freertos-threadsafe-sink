@@ -1,10 +1,11 @@
 # `freertos-threadsafe-sink`
 
-A lock-free, array-based, header-only multi-producer byte sink for FreeRTOS.
+A lock-free, array-based, header-only multi-producer byte/half-word/word sink
+for FreeRTOS.
 
 ## Prerequisites
 
-- Architecture with default atomic byte and word access, i.e. ARM
+- Architecture with default byte/half-word/word atomicity, i.e. ARM
 - FreeRTOS Kernel above `V10.2.1` (depends on Task Notification)
 - C++23 (depends on `constexpr if`)
 
@@ -14,7 +15,7 @@ Everything is under the namespace `freertos`.
 
 ### 1. Initialization
 
-Construct a `tsink<N>`.
+Construct a `tsink<T, N>` with `T: u8, u16, u32`.
 
 A size of a power of two is **strongly** recommended to get better performance
 by turning division & modulo operations (used in a hot loop by the reader for
@@ -33,26 +34,27 @@ Call `write_<variant>()` member functions to write data into the sink.
 
 ```cpp
 template <typename T>
-concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
+concept AtomicType = sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4;
 
 template <typename C>
-concept ElemContainer = requires(C t) {
-  requires Elem<std::decay_t<decltype(t[0])>>;
+concept AtomicTypeContainer = requires(C t) {
+  requires AtomicType<std::decay_t<decltype(t[0])>>;
   t.data();
   t.size();
 };
 
-bool write_or_fail(Elem auto elem);
-void write_blocking(const Elem auto* ptr, size_t len);
-void write_blocking(const ElemContainer auto& t);
-void write_ordered(const Elem auto* ptr, size_t len, size_t ticket);
+bool write_or_fail(AtomicType auto elem)
+void write_blocking(const AtomicType auto* ptr, size_t len);
+void write_blocking(const AtomicTypeContainer auto& t);
+void write_ordered(const AtomicType auto* ptr, size_t len, size_t ticket);
 ```
 
-Thread-safe, lock-free byte writes are done via atomic CAS(Compare and Swap)
-while leveraging the default read/write atomicity for aligned byte on ARM.
+Thread-safe, lock-free single writes (`write_or_fail`) are done via atomic
+CAS(Compare and Swap) while leveraging the default read/write atomicity for
+aligned data on ARM.
 
-For a chunk of bytes, thread-safety is guaranteed by synchronizing the calls
-internally using a statically initialized FreeRTOS mutex.
+For a chunk of (unaligned) bytes, thread-safety is guaranteed by synchronizing
+the calls internally using a statically initialized FreeRTOS mutex.
 
 Strict FIFO order can be achieved only with `write_ordered()` by passing a
 atomically incremented counter starting from 0 as a unique *ticket*. Performance
@@ -84,14 +86,15 @@ auto tsink_consume = [](const uint8_t* buf, size_t size) static {
   HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
   sink->consume_complete<CALL_FROM::NON_ISR>();
 };
-auto sink = tsink<2048>(tsink_consume, osPriorityAboveNormal);;
+auto sink = tsink<uint8_t, 2048>(tsink_consume, osPriorityAboveNormal);;
 
-uint8_t buf[100];
-char buf[100]; // alternative
+uint8_t buf[100]; // char buf[100];
+std::array<uint8_t, 15> arr{};
 
 auto success = sink.write_or_fail('c');
 sink.write_blocking("hello world"sv);
 sink.write_blocking(buf, std::strlen(buf));
+sink.write_blocking(arr);
 
 auto ticket_machine = std::atomic<size_t>{};
 sink.write_ordered(buf, std::strlen(buf), ticket_machine.fetch_add(1));
@@ -103,7 +106,7 @@ DMA transfer completion:
 ```cpp
 using namespace freertos;
 
-std::shared_ptr<tsink<2048>> sink;
+std::shared_ptr<tsink<uint8_t, 2048>> sink;
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart) {
   if (huart->Instance == huart3.Instance) // UART handle for DMA-TX
@@ -126,12 +129,12 @@ void main() {
     HAL_UART_Transmit_DMA(&huart3, buf, size);
   };
 
-  sink = std::make_shared<tsink<2048>>(consume_dma, osPriorityAboveNormal);
+  sink = std::make_shared<tsink<uint8_t, 2048>>(consume_dma,
+                                                osPriorityAboveNormal);
   sink->write_blocking("sink initialized\n"sv);
 }
 ```
 
 # TODO
 
-- atomic write also for word length data
 - API to manually get & consume the data instead automatically via task

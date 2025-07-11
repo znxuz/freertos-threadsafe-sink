@@ -5,19 +5,17 @@
 
 #include <array>
 #include <atomic>
-#include <concepts>
 #include <span>
 #include <type_traits>
 
 namespace freertos {
 namespace detail {
-// TODO: variable atomic length support
 template <typename T>
-concept Elem = std::same_as<T, uint8_t> || std::same_as<T, char>;
+concept AtomicType = sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4;
 
 template <typename C>
-concept ElemContainer = requires(C t) {
-  requires Elem<std::decay_t<decltype(t[0])>>;
+concept AtomicTypeContainer = requires(C t) {
+  requires AtomicType<std::decay_t<decltype(t[0])>>;
   t.data();
   t.size();
 };
@@ -27,21 +25,21 @@ enum struct CALL_FROM : uint8_t { ISR, NON_ISR };
 
 using size_type = size_t;
 
-template <size_type N>
+template <detail::AtomicType T, size_type N>
 struct tsink {
   using consume_fn_ptr = void (*)(const uint8_t*, size_type);
 
   tsink(consume_fn_ptr f, uint32_t priority) : consume_fn{f} {
     auto task_impl = [](void* arg) {
-      auto consume_and_wait = [](std::span<const uint8_t> ringbuf,
-                                 size_type pos, size_type size,
-                                 consume_fn_ptr consume_fn) {
+      auto consume_and_wait = [](std::span<const T> ringbuf, size_type pos,
+                                 size_type size, consume_fn_ptr consume_fn) {
         if (!size) return;
-        consume_fn(ringbuf.data() + pos, size);
+        consume_fn(reinterpret_cast<const uint8_t*>(ringbuf.data() + pos),
+                   size * sizeof(T));
         ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
       };
 
-      auto* sink = reinterpret_cast<tsink<N>*>(arg);
+      auto* sink = reinterpret_cast<tsink<T, N>*>(arg);
       while (true) {
         if (size_type sz = sink->size(); sz) {
           auto idx = sink->normalize(sink->read_idx);
@@ -90,7 +88,7 @@ struct tsink {
   constexpr size_type space() const { return ringbuf.size() - size(); }
   void reset_ticket() { ticket_matcher = 0; }
 
-  bool write_or_fail(detail::Elem auto elem) {
+  bool write_or_fail(detail::AtomicType auto elem) {
     auto expected = write_idx.load();
     if (expected - read_idx == ringbuf.size()) return false;
     if (write_idx.compare_exchange_strong(expected, expected + 1)) {
@@ -101,9 +99,10 @@ struct tsink {
   }
 
   // write `len` from `ptr` buffer into the sink
-  void write_blocking(const detail::Elem auto* ptr, size_type len) {
+  void write_blocking(const detail::AtomicType auto* ptr, size_type len) {
     while (true) {
-      if (volatile auto _ = mtx_guard{write_mtx}; space() >= len) {
+      if (volatile auto _ = mtx_guard{write_mtx};
+          space() >= len * sizeof(*ptr)) {
         for (size_type i = 0; i < len; ++i) configASSERT(write_or_fail(ptr[i]));
         return;
       }
@@ -111,12 +110,12 @@ struct tsink {
     }
   }
 
-  void write_blocking(const detail::ElemContainer auto& t) {
+  void write_blocking(const detail::AtomicTypeContainer auto& t) {
     write_blocking(t.data(), t.size());
   }
 
   // performance at the mercy of the scheduler
-  inline void write_ordered(const detail::Elem auto* ptr, size_type len,
+  inline void write_ordered(const detail::AtomicType auto* ptr, size_type len,
                             size_type ticket) {
     while (true) {
       if (ticket == ticket_matcher) {
@@ -141,7 +140,7 @@ struct tsink {
   }
 
  private:
-  std::array<uint8_t, N> ringbuf{};
+  std::array<T, N> ringbuf{};
   volatile size_type read_idx = 0;
   std::atomic<size_type> write_idx = 0;
   size_type ticket_matcher = 0;
