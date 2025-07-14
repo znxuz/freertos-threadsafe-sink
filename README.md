@@ -1,6 +1,6 @@
 # `freertos-threadsafe-sink`
 
-A lock-free, array-based, header-only multi-producer byte/half-word/word sink
+A header-only, array-based, lock-free multi-producer byte/half-word/word sink
 for FreeRTOS.
 
 ## Prerequisites
@@ -22,7 +22,7 @@ by turning division & modulo operations (used in a hot loop by the reader for
 normalizing the indices) into 1-cycle instructions.
 
 Pass a consume function and a priority level for the reader task to
-automatically consume the data.
+automatically call the function and consume the data.
 
 ```cpp
 using consume_fn_ptr = void (*)(const uint8_t*, size_t);
@@ -51,26 +51,29 @@ void write_ordered(const AtomicType auto* ptr, size_t len, size_t ticket);
 
 Thread-safe, lock-free single writes (`write_or_fail`) are done via atomic
 CAS(Compare and Swap) while leveraging the default read/write atomicity for
-aligned data on ARM.
+aligned data on ARM. The data must be aligned.
 
-For a chunk of (unaligned) bytes, thread-safety is guaranteed by synchronizing
-the calls internally using a statically initialized FreeRTOS mutex.
+For a chunk of bytes greater than 32 bits, thread-safety is guaranteed by
+synchronizing the calls internally using a statically initialized FreeRTOS
+mutex.
 
-Strict FIFO order can be achieved only with `write_ordered()` by passing a
-atomically incremented counter starting from 0 as a unique *ticket*. Performance
-degrades exponentially with the number of threads there are on calling this
-function concurrently, as the non-deterministic scheduling can't possibly
-prioritize the thread with the next "correct" ticket. Also call `reset_ticket()`
-when the atomic ticket starts from 0 again.
+Strict FIFO order *can* be achieved only via `write_ordered()` by passing a
+atomically incremented counter starting from 0 as a unique *ticket*. But the
+performance degrades exponentially with the number of threads there are on
+calling this function concurrently, as the non-deterministic scheduling can't
+possibly prioritize the thread with the next "correct" ticket. Also call
+`reset_ticket()` to reset the internal counter, when the passed ticket should
+start from 0 again.
 
 ### 3. Signal Consumption Completion
 
-Upon completion of data transfer, call `consume_complete()` to signal
-the reader task. This callback can be invoked in an ISR context.
+After the data is consumed, call `consume_complete()` to signal the reader task.
+This callback can be invoked in an ISR context.
 
-This mechanism is needed to allow the reader task to synchronize with external
-IO hardware (e.g., a DMA controller) to initiate subsequent writes only after
-the previous transfer has been completed.
+This mechanism is needed to allow the consumption function to work
+asynchronously, e.g. to synchronize with external IO hardware (e.g., a DMA
+controller) to initiate subsequent writes only after the previous transfer has
+been completed.
 
 ```cpp
 enum struct CALL_FROM { ISR, NON_ISR };
