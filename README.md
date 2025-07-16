@@ -43,7 +43,7 @@ concept AtomicTypeContainer = requires(C t) {
   t.size();
 };
 
-bool write_or_fail(AtomicType auto elem)
+bool write_or_fail(AtomicType auto elem);
 void write_blocking(const AtomicType auto* ptr, size_t len);
 void write_blocking(const AtomicTypeContainer auto& t);
 void write_ordered(const AtomicType auto* ptr, size_t len, size_t ticket);
@@ -51,7 +51,7 @@ void write_ordered(const AtomicType auto* ptr, size_t len, size_t ticket);
 
 Thread-safe, lock-free single writes (`write_or_fail`) are done via atomic
 CAS(Compare and Swap) while leveraging the default read/write atomicity for
-aligned data on ARM. The data must be aligned.
+aligned data on ARM.
 
 For a chunk of bytes greater than 32 bits, thread-safety is guaranteed by
 synchronizing the calls internally using a statically initialized FreeRTOS
@@ -85,14 +85,18 @@ void consume_complete();
 ## examples
 
 ```cpp
-auto tsink_consume = [](const uint8_t* buf, size_t size) static {
+using atomic_type = uint8_t;
+
+auto tsink_consume = [](const atomic_type* buf, size_t size) static {
   HAL_UART_Transmit(&huart3, buf, size, HAL_MAX_DELAY);
   sink->consume_complete<CALL_FROM::NON_ISR>();
 };
-auto sink = tsink<uint8_t, 2048>(tsink_consume, osPriorityAboveNormal);;
+constexpr auto POWER_TWO_SIZE = 2048uz;
+auto sink = tsink<atomic_type, POWER_TWO_SIZE>(tsink_consume,
+                                                    osPriorityAboveNormal);
 
-uint8_t buf[100]; // char buf[100];
-std::array<uint8_t, 15> arr{};
+atomic_type buf[100]; // char buf[100];
+std::array<atomic_type, 15> arr{};
 
 auto success = sink.write_or_fail('c');
 sink.write_blocking("hello world"sv);
